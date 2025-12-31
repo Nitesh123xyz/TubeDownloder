@@ -1,11 +1,9 @@
 import { StatusBar, StyleSheet, Text, View } from 'react-native';
-import React from 'react';
-
+import Video from './components/Video';
 const App = () => {
   return (
-    <View>
-      <StatusBar barStyle="dark-content" backgroundColor={"red"} />
-      <Text>App</Text>
+    <View style={{ flex: 1 }}>
+      <Video />
     </View>
   );
 };
