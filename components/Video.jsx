@@ -3,264 +3,228 @@ import {
   View,
   Text,
   StyleSheet,
-  Image,
   Alert,
-  PermissionsAndroid,
-  Platform,
   TouchableOpacity,
+  ActivityIndicator,
 } from 'react-native';
-
 import ShareMenu from 'react-native-share-menu';
-import RNFS from 'react-native-fs';
-import axios from 'axios';
+import notifee, { AndroidImportance } from '@notifee/react-native';
+import {
+  createDownloadTask,
+  directories,
+} from '@kesha-antonov/react-native-background-downloader';
 import { CameraRoll } from '@react-native-camera-roll/camera-roll';
+import axios from 'axios';
+
+// Render Backend URL
+const BACKEND_URL = 'https://tubebackend.onrender.com';
+
+// Snaptube uses a consistent User-Agent to match Backend & Frontend
+const SHARED_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 export default function Video() {
-  const [status, setStatus] = useState('Waiting for Instagram link…');
-  const [title, setTitle] = useState('');
-  const [thumbnail, setThumbnail] = useState(null);
+  const [status, setStatus] = useState('Wait for link...');
+  const [loading, setLoading] = useState(false);
+  const [videoData, setVideoData] = useState(null);
   const [progress, setProgress] = useState(0);
-  const [quality, setQuality] = useState(720);
 
-  // ---------------- SHARE LISTENER ----------------
   useEffect(() => {
-    ShareMenu.getInitialShare(share => {
-      if (share) handleShare(share);
-    });
-
-    const listener = ShareMenu.addNewShareListener(share => {
-      handleShare(share);
-    });
-
+    notifee.requestPermission();
+    ShareMenu.getInitialShare(handleShare);
+    const listener = ShareMenu.addNewShareListener(handleShare);
     return () => listener?.remove();
   }, []);
 
   const handleShare = share => {
     const url = share?.data;
-
-    if (!url || typeof url !== 'string') {
-      setStatus('Invalid shared data');
-      return;
-    }
-
-    if (!url.includes('instagram.com')) {
-      Alert.alert('Unsupported', 'Only Instagram links are supported');
-      return;
-    }
-
-    startDownload(url);
+    if (url && typeof url === 'string') fetchVideoInfo(url);
   };
 
-  // ---------------- PERMISSION (UNIVERSAL) ----------------
-  const requestPermission = async () => {
-    if (Platform.OS !== 'android') return true;
-
-    // Android 13+
-    if (Platform.Version >= 33) return true;
-
-    // Android 12 and below
-    const granted = await PermissionsAndroid.request(
-      PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
-      {
-        title: 'Storage Permission',
-        message: 'Video save karne ke liye storage permission chahiye',
-        buttonPositive: 'Allow',
-      },
-    );
-
-    return granted === PermissionsAndroid.RESULTS.GRANTED;
-  };
-
-  // ---------------- DOWNLOAD LOGIC ----------------
-  const startDownload = async instagramUrl => {
+  const fetchVideoInfo = async url => {
+    setLoading(true);
+    setVideoData(null);
+    setStatus('Snatching Link... 🚀');
     try {
-      const allowed = await requestPermission();
-      // if (!allowed) {
-      //   setStatus('Storage permission denied');
-      //   return;
-      // }
+      // Backend se direct extraction
+      const res = await axios.post(`${BACKEND_URL}/extract`, { url });
 
-      setProgress(0);
-      setStatus(`Fetching video (${quality}p)…`);
-      const API_BASE = 'https://videodownloderbackend.onrender.com';
-      // 🔴 REPLACE WITH YOUR PC IP
-      const res = await axios.post(`${API_BASE}/extract`, {
-        url: instagramUrl,
-        quality: quality,
-      });
-
-      console.log(res.data);
-
-      const { videoUrl, title, thumbnail } = res.data;
-
-      if (!videoUrl) {
-        setStatus('Video not available in this quality');
-        return;
-      }
-
-      setTitle(title || 'Instagram Video');
-      setThumbnail(thumbnail || null);
-      setStatus(`Downloading ${quality}p…`);
-
-      const filePath =
-        RNFS.ExternalStorageDirectoryPath +
-        `/Download/insta_${quality}p_${Date.now()}.mp4`;
-
-      // ✅ DOWNLOAD FILE
-      await RNFS.downloadFile({
-        fromUrl: videoUrl,
-        toFile: filePath,
-        progressDivider: 1,
-        progress: data => {
-          if (data.contentLength > 0) {
-            const percent = Math.floor(
-              (data.bytesWritten / data.contentLength) * 100,
-            );
-            setProgress(percent);
-          }
-        },
-      }).promise;
-
-      setProgress(100);
-      setStatus('Download completed ✔');
-
-      // ✅ SAVE TO GALLERY (SAFE + MODERN)
-      try {
-        await CameraRoll.saveAsset(filePath, {
-          type: 'video',
-          album: 'VideoDownloader',
-        });
-        setStatus('Download completed ✔ Added to Gallery');
-      } catch (galleryErr) {
-        console.log('Gallery save failed:', galleryErr);
-        setStatus('Download completed ✔ (Check Gallery permission)');
+      if (res.data.success) {
+        setVideoData(res.data);
+        setStatus('Ready to Download! ✅');
+      } else {
+        setStatus('Extraction Failed ❌');
+        Alert.alert('Error', res.data.error || 'Could not fetch link');
       }
     } catch (err) {
-      console.log('Download error:', err);
-      setStatus('Download failed ❌');
+      console.log(err);
+      setStatus('Server Error ❌');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // ---------------- UI ----------------
+  // --- NOTIFICATION ---
+  async function updateNotification(p) {
+    const channelId = await notifee.createChannel({
+      id: 'dl',
+      name: 'Downloads',
+      importance: AndroidImportance.LOW,
+    });
+    await notifee.displayNotification({
+      id: 'dl_id',
+      title: 'Downloading Video...',
+      body: `${p}% completed`,
+      android: {
+        channelId,
+        onlyAlertOnce: true,
+        progress: { max: 100, current: p },
+      },
+    });
+  }
+
+  const startDownload = async () => {
+    if (!videoData?.videoUrl) return;
+
+    setStatus('Starting Download...');
+    const fileName = `Tube_${Date.now()}.mp4`;
+    const filePath = `${directories.documents}/${fileName}`;
+
+    // Snaptube secret: Headers matching
+    const task = createDownloadTask({
+      id: fileName,
+      url: videoData.videoUrl,
+      destination: filePath,
+      headers: {
+        'User-Agent': SHARED_USER_AGENT,
+        Referer:
+          videoData.source === 'youtube'
+            ? 'https://www.youtube.com/'
+            : 'https://www.instagram.com/',
+      },
+    });
+
+    task
+      .begin(() => updateNotification(0))
+      .progress(({ bytesDownloaded, bytesTotal }) => {
+        const p = Math.floor((bytesDownloaded / bytesTotal) * 100);
+        setProgress(p);
+        if (p % 5 === 0) updateNotification(p);
+      })
+      .done(async () => {
+        setStatus('Finalizing Gallery Save...');
+        try {
+          await CameraRoll.saveAsset(`file://${filePath}`, {
+            type: 'video',
+            album: 'TubeApp',
+          });
+          await notifee.displayNotification({
+            title: 'Success! ✔',
+            body: 'Video saved to Gallery',
+            android: { channelId: 'dl' },
+          });
+          setStatus('Saved to Gallery! ✔');
+        } catch (e) {
+          setStatus('Saved in Downloads folder');
+        }
+        setProgress(0);
+        setVideoData(null);
+      })
+      .error(err => {
+        console.log(err);
+        setStatus('Download Failed ❌');
+      })
+      .start();
+  };
+
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>Video Downloader</Text>
+      <Text style={styles.header}>TubeDownloader</Text>
 
       <View style={styles.card}>
-        {thumbnail ? (
-          <Image source={{ uri: thumbnail }} style={styles.thumbnail} />
-        ) : (
-          <View style={styles.thumbnailPlaceholder}>
-            <Text style={styles.placeholderText}>Thumbnail</Text>
+        {loading ? (
+          <View>
+            <ActivityIndicator size="large" color="#FF0000" />
+            <Text style={styles.loaderText}>{status}</Text>
           </View>
+        ) : (
+          <>
+            <Text style={styles.title} numberOfLines={2}>
+              {videoData?.title || 'Share a video link to start'}
+            </Text>
+            <Text style={styles.status}>{status}</Text>
+
+            {progress > 0 && (
+              <View style={styles.barContainer}>
+                <View style={[styles.barFill, { width: `${progress}%` }]} />
+                <Text style={styles.progressLabel}>{progress}%</Text>
+              </View>
+            )}
+
+            {videoData && (
+              <TouchableOpacity style={styles.btn} onPress={startDownload}>
+                <Text style={styles.btnText}>DOWNLOAD 720p</Text>
+              </TouchableOpacity>
+            )}
+          </>
         )}
-
-        <Text style={styles.title}>{title || 'No video yet'}</Text>
-        <Text style={styles.status}>{status}</Text>
-
-        {/* QUALITY SELECTOR */}
-        <View style={styles.qualityRow}>
-          {[480, 720, 1080].map(q => (
-            <TouchableOpacity
-              key={q}
-              style={[styles.qualityBtn, quality === q && styles.qualityActive]}
-              onPress={() => setQuality(q)}
-            >
-              <Text style={styles.qualityText}>{q}p</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {/* PROGRESS */}
-        <View style={styles.progressBg}>
-          <View style={[styles.progressFill, { width: `${progress}%` }]} />
-        </View>
-
-        <Text style={styles.percent}>{progress}%</Text>
       </View>
     </View>
   );
 }
 
-// ---------------- STYLES ----------------
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
-    padding: 16,
+    backgroundColor: '#f0f2f5',
+    padding: 20,
+    justifyContent: 'center',
   },
   header: {
-    color: '#fff',
-    fontSize: 22,
-    fontWeight: '700',
+    fontSize: 34,
+    fontWeight: 'bold',
+    color: '#FF0000',
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: 50,
   },
   card: {
-    backgroundColor: '#1e1e1e',
-    borderRadius: 12,
-    padding: 16,
-  },
-  thumbnail: {
-    width: '100%',
-    height: 200,
-    borderRadius: 8,
-    marginBottom: 12,
-  },
-  thumbnailPlaceholder: {
-    height: 200,
-    backgroundColor: '#2c2c2c',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 8,
-    marginBottom: 12,
-  },
-  placeholderText: {
-    color: '#888',
+    backgroundColor: '#fff',
+    borderRadius: 25,
+    padding: 30,
+    elevation: 12,
+    shadowColor: '#000',
   },
   title: {
-    color: '#fff',
     fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 6,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 15,
+    color: '#333',
   },
-  status: {
-    color: '#ccc',
-    fontSize: 14,
-    marginBottom: 10,
+  status: { color: '#666', textAlign: 'center', marginBottom: 25 },
+  loaderText: { textAlign: 'center', marginTop: 10, color: '#FF0000' },
+  btn: {
+    backgroundColor: '#FF0000',
+    padding: 18,
+    borderRadius: 15,
+    alignItems: 'center',
   },
-  qualityRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: 14,
-  },
-  qualityBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    backgroundColor: '#333',
-  },
-  qualityActive: {
-    backgroundColor: '#ff2c55',
-  },
-  qualityText: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  progressBg: {
-    height: 8,
-    backgroundColor: '#333',
-    borderRadius: 10,
+  btnText: { color: '#fff', fontWeight: 'bold', fontSize: 18 },
+  barContainer: {
+    height: 14,
+    backgroundColor: '#eee',
+    borderRadius: 7,
+    marginBottom: 20,
     overflow: 'hidden',
+    position: 'relative',
   },
-  progressFill: {
-    height: '100%',
-    backgroundColor: '#ff2c55',
-  },
-  percent: {
-    marginTop: 8,
-    color: '#fff',
-    fontSize: 12,
-    textAlign: 'right',
+  barFill: { height: '100%', backgroundColor: '#28a745' },
+  progressLabel: {
+    position: 'absolute',
+    width: '100%',
+    textAlign: 'center',
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#000',
   },
 });
