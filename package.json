@@ -13,7 +13,6 @@
     "@kesha-antonov/react-native-background-downloader": "^4.3.8",
     "@notifee/react-native": "^9.1.8",
     "@react-native-camera-roll/camera-roll": "^7.10.2",
-    "@react-native/new-app-screen": "0.83.1",
     "axios": "^1.13.2",
     "react": "19.2.0",
     "react-native": "0.83.1",

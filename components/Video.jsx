@@ -1,14 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  Alert,
-  TouchableOpacity,
-  ActivityIndicator,
-} from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import ShareMenu from 'react-native-share-menu';
-import notifee, { AndroidImportance } from '@notifee/react-native';
+import notifee, {
+  AndroidImportance,
+  AndroidStyle,
+} from '@notifee/react-native';
 import {
   createDownloadTask,
   directories,
@@ -16,18 +12,15 @@ import {
 import { CameraRoll } from '@react-native-camera-roll/camera-roll';
 import axios from 'axios';
 
-// Render Backend URL
 const BACKEND_URL = 'https://tubebackend.onrender.com';
-
-// Snaptube uses a consistent User-Agent to match Backend & Frontend
 const SHARED_USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
 export default function Video() {
-  const [status, setStatus] = useState('Wait for link...');
+  const [status, setStatus] = useState('Waiting for link...');
   const [loading, setLoading] = useState(false);
-  const [videoData, setVideoData] = useState(null);
   const [progress, setProgress] = useState(0);
+  const [currentTitle, setCurrentTitle] = useState('');
 
   useEffect(() => {
     notifee.requestPermission();
@@ -38,101 +31,101 @@ export default function Video() {
 
   const handleShare = share => {
     const url = share?.data;
-    if (url && typeof url === 'string') fetchVideoInfo(url);
+    if (url && typeof url === 'string') fetchAndAutoDownload(url);
   };
 
-  const fetchVideoInfo = async url => {
+  const fetchAndAutoDownload = async url => {
     setLoading(true);
-    setVideoData(null);
+    setProgress(0);
     setStatus('Snatching Link... 🚀');
+
     try {
-      // Backend se direct extraction
       const res = await axios.post(`${BACKEND_URL}/extract`, { url });
 
       if (res.data.success) {
-        setVideoData(res.data);
-        setStatus('Ready to Download! ✅');
+        setCurrentTitle(res.data.title);
+        // Step 2: Auto Start Download
+        startDownloadLogic(res.data);
       } else {
         setStatus('Extraction Failed ❌');
-        Alert.alert('Error', res.data.error || 'Could not fetch link');
+        setLoading(false);
       }
     } catch (err) {
-      console.log(err);
       setStatus('Server Error ❌');
-    } finally {
       setLoading(false);
     }
   };
 
-  // --- NOTIFICATION ---
-  async function updateNotification(p) {
+  const updateNotification = async (p, title, thumb, isDone = false) => {
     const channelId = await notifee.createChannel({
-      id: 'dl',
-      name: 'Downloads',
-      importance: AndroidImportance.LOW,
+      id: 'downloader',
+      name: 'Video Downloader',
+      importance: AndroidImportance.HIGH,
     });
+
     await notifee.displayNotification({
-      id: 'dl_id',
-      title: 'Downloading Video...',
-      body: `${p}% completed`,
+      id: 'dl_task',
+      title: isDone ? 'Download Complete ✅' : 'Downloading...',
+      body: isDone ? `Saved: ${title}` : `${p}% - ${title.substring(0, 30)}...`,
       android: {
         channelId,
         onlyAlertOnce: true,
-        progress: { max: 100, current: p },
+        largeIcon: thumb || undefined,
+        // Snaptube Style: Big Picture/Icon support
+        style: isDone
+          ? undefined
+          : { type: AndroidStyle.BIGTEXT, text: `${p}% completed of ${title}` },
+        progress: { max: 100, current: p, indeterminate: false },
+        ongoing: !isDone,
+        importance: AndroidImportance.HIGH,
+        pressAction: { id: 'default' },
       },
     });
-  }
+  };
 
-  const startDownload = async () => {
-    if (!videoData?.videoUrl) return;
-
-    setStatus('Starting Download...');
+  const startDownloadLogic = async video => {
+    setStatus('Downloading Started... ⬇️');
     const fileName = `Tube_${Date.now()}.mp4`;
     const filePath = `${directories.documents}/${fileName}`;
 
-    // Snaptube secret: Headers matching
     const task = createDownloadTask({
       id: fileName,
-      url: videoData.videoUrl,
+      url: video.videoUrl,
       destination: filePath,
       headers: {
         'User-Agent': SHARED_USER_AGENT,
         Referer:
-          videoData.source === 'youtube'
+          video.source === 'youtube'
             ? 'https://www.youtube.com/'
             : 'https://www.instagram.com/',
       },
     });
 
     task
-      .begin(() => updateNotification(0))
+      .begin(() => updateNotification(0, video.title, video.thumbnail))
       .progress(({ bytesDownloaded, bytesTotal }) => {
         const p = Math.floor((bytesDownloaded / bytesTotal) * 100);
         setProgress(p);
-        if (p % 5 === 0) updateNotification(p);
+        if (p % 10 === 0) updateNotification(p, video.title, video.thumbnail);
       })
       .done(async () => {
-        setStatus('Finalizing Gallery Save...');
         try {
           await CameraRoll.saveAsset(`file://${filePath}`, {
             type: 'video',
             album: 'TubeApp',
           });
-          await notifee.displayNotification({
-            title: 'Success! ✔',
-            body: 'Video saved to Gallery',
-            android: { channelId: 'dl' },
-          });
-          setStatus('Saved to Gallery! ✔');
+          await updateNotification(100, video.title, video.thumbnail, true);
+          setStatus('Video Saved Successfully! ✅');
         } catch (e) {
-          setStatus('Saved in Downloads folder');
+          setStatus('Saved in Storage');
         }
+        setLoading(false);
         setProgress(0);
-        setVideoData(null);
       })
-      .error(err => {
-        console.log(err);
+      .error(() => {
         setStatus('Download Failed ❌');
+        setLoading(false);
+        notifee.cancelNotification('dl_task');
       })
       .start();
   };
@@ -140,33 +133,29 @@ export default function Video() {
   return (
     <View style={styles.container}>
       <Text style={styles.header}>TubeDownloader</Text>
-
       <View style={styles.card}>
-        {loading ? (
-          <View>
-            <ActivityIndicator size="large" color="#FF0000" />
-            <Text style={styles.loaderText}>{status}</Text>
-          </View>
-        ) : (
-          <>
-            <Text style={styles.title} numberOfLines={2}>
-              {videoData?.title || 'Share a video link to start'}
-            </Text>
-            <Text style={styles.status}>{status}</Text>
+        <Text style={styles.title} numberOfLines={2}>
+          {loading
+            ? currentTitle || 'Processing...'
+            : 'Share link from YT/Insta'}
+        </Text>
 
+        <Text style={[styles.status, { color: loading ? '#FF0000' : '#666' }]}>
+          {status}
+        </Text>
+
+        {loading && (
+          <View style={styles.loaderContainer}>
+            <ActivityIndicator size="large" color="#FF0000" />
             {progress > 0 && (
-              <View style={styles.barContainer}>
-                <View style={[styles.barFill, { width: `${progress}%` }]} />
-                <Text style={styles.progressLabel}>{progress}%</Text>
+              <View style={styles.progressBox}>
+                <View style={styles.barContainer}>
+                  <View style={[styles.barFill, { width: `${progress}%` }]} />
+                </View>
+                <Text style={styles.progressText}>{progress}%</Text>
               </View>
             )}
-
-            {videoData && (
-              <TouchableOpacity style={styles.btn} onPress={startDownload}>
-                <Text style={styles.btnText}>DOWNLOAD 720p</Text>
-              </TouchableOpacity>
-            )}
-          </>
+          </View>
         )}
       </View>
     </View>
@@ -176,55 +165,51 @@ export default function Video() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f0f2f5',
+    backgroundColor: '#f8f9fa',
     padding: 20,
     justifyContent: 'center',
   },
   header: {
-    fontSize: 34,
+    fontSize: 36,
     fontWeight: 'bold',
     color: '#FF0000',
     textAlign: 'center',
-    marginBottom: 50,
+    marginBottom: 40,
   },
   card: {
     backgroundColor: '#fff',
-    borderRadius: 25,
-    padding: 30,
-    elevation: 12,
+    borderRadius: 30,
+    padding: 40,
+    elevation: 15,
     shadowColor: '#000',
   },
   title: {
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 18,
+    fontWeight: '700',
     textAlign: 'center',
-    marginBottom: 15,
-    color: '#333',
+    color: '#222',
+    marginBottom: 10,
   },
-  status: { color: '#666', textAlign: 'center', marginBottom: 25 },
-  loaderText: { textAlign: 'center', marginTop: 10, color: '#FF0000' },
-  btn: {
-    backgroundColor: '#FF0000',
-    padding: 18,
-    borderRadius: 15,
-    alignItems: 'center',
-  },
-  btnText: { color: '#fff', fontWeight: 'bold', fontSize: 18 },
-  barContainer: {
-    height: 14,
-    backgroundColor: '#eee',
-    borderRadius: 7,
+  status: {
+    fontSize: 14,
+    textAlign: 'center',
     marginBottom: 20,
+    fontWeight: '500',
+  },
+  loaderContainer: { alignItems: 'center' },
+  progressBox: { width: '100%', marginTop: 20 },
+  barContainer: {
+    height: 12,
+    backgroundColor: '#eee',
+    borderRadius: 6,
     overflow: 'hidden',
-    position: 'relative',
   },
   barFill: { height: '100%', backgroundColor: '#28a745' },
-  progressLabel: {
-    position: 'absolute',
-    width: '100%',
+  progressText: {
     textAlign: 'center',
-    fontSize: 10,
+    marginTop: 8,
+    fontSize: 14,
     fontWeight: 'bold',
-    color: '#000',
+    color: '#333',
   },
 });
