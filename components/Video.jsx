@@ -132,7 +132,7 @@ export default function Video() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.header}>TubeDownloader</Text>
+      <Text style={styles.header}>TUBE DOWNLOADER</Text>
       <View style={styles.card}>
         <Text style={styles.title} numberOfLines={2}>
           {loading
@@ -170,7 +170,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   header: {
-    fontSize: 36,
+    fontSize: 25,
     fontWeight: 'bold',
     color: '#FF0000',
     textAlign: 'center',
@@ -184,7 +184,7 @@ const styles = StyleSheet.create({
     shadowColor: '#000',
   },
   title: {
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '700',
     textAlign: 'center',
     color: '#222',
